@@ -39,13 +39,9 @@ static const struct device *const led_dev = DEVICE_DT_GET(DT_CHOSEN(zmk_trackpad
 #define POLLING_INTERVAL_MS 5
 #define AUTO_OFF_DELAY_MS 5000
 
-#define FLASH_ON_MS 100
-#define FLASH_PERIOD 1000
-
 static struct k_work_delayable polling_work;
 static struct k_work_delayable animation_work;
 static struct k_work_delayable auto_off_work;
-static struct k_work_delayable usb_flash_work;
 
 static bool capslock_on = false;
 static bool touch_active = false;
@@ -56,9 +52,6 @@ static uint8_t last_valid_brt = BRT_MAX;
 static uint8_t last_backlight_brt = 0;
 static bool manual_override = false;
 static bool keyboard_active = false;
-
-static bool usb_flash_state = false;
-static bool usb_mode = false;
 
 static void set_led_brightness(uint8_t level) {
     if (!device_is_ready(led_dev)) {
@@ -71,18 +64,6 @@ static void set_led_brightness(uint8_t level) {
             LOG_ERR("Failed to set LED[%d] brightness: %d", i, err);
         }
     }
-}
-
-static void usb_flash_work_handler(struct k_work *work) {
-    if (!usb_mode) {
-        set_led_brightness(0);
-        return;
-    }
-
-    usb_flash_state = !usb_flash_state;
-    set_led_brightness(usb_flash_state ? BRT_MAX : 0);
-    k_work_reschedule(&usb_flash_work,
-                      K_MSEC(usb_flash_state ? FLASH_ON_MS : (FLASH_PERIOD - FLASH_ON_MS)));
 }
 
 static void auto_off_work_handler(struct k_work *work) {
@@ -122,26 +103,9 @@ static void polling_work_handler(struct k_work *work) {
     bool current_active = (zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE);
     uint8_t current_brt = zmk_backlight_get_brt();
 
-    /* ---------------- USB Mode ---------------- */
-    if (transport == ZMK_TRANSPORT_USB) {
-        if (!usb_mode) {
-            /* blink */
-            usb_mode = true;
-            usb_flash_state = false;
-            k_work_reschedule(&usb_flash_work, K_NO_WAIT);
-            LOG_INF("Entered USB flash mode");
-        }
-        k_work_reschedule(&polling_work, K_MSEC(POLLING_INTERVAL_MS));
-        return;
-    }
-
-    /* ---------------- BLE Output Mode ---------------- */
-    if (usb_mode) {
-        usb_mode = false;
-        k_work_cancel_delayable(&usb_flash_work);
-        set_led_brightness(0);
-        LOG_INF("Exited USB flash mode");
-    }
+    /* USB used to blink the trackpad LED as a cable-present beacon
+     * (100ms on / 900ms off). Same lighting as BLE: touch and Caps only. */
+    (void)transport;
 
     if (current_active != keyboard_active) {
         keyboard_active = current_active;
@@ -212,15 +176,12 @@ static int indicator_tp_init(void) {
     }
 
     set_led_brightness(0);
-    usb_mode = false;
-    usb_flash_state = false;
     last_backlight_brt = zmk_backlight_get_brt();
     capslock_on = touch_active = manual_override = keyboard_active = false;
 
     k_work_init_delayable(&polling_work, polling_work_handler);
     k_work_init_delayable(&animation_work, animation_work_handler);
     k_work_init_delayable(&auto_off_work, auto_off_work_handler);
-    k_work_init_delayable(&usb_flash_work, usb_flash_work_handler);
 
     k_work_reschedule(&polling_work, K_NO_WAIT);
     return 0;
